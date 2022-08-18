@@ -1453,6 +1453,94 @@ func (g *Generator) generateImports() {
 	g.P()
 }
 
+// sizeOfField returns the size in bytes of the field's Go type.
+func (g *Generator) sizeOfField(message *Descriptor, field *descriptor.FieldDescriptorProto) int {
+	if needsStar(field, g.file.proto3 && field.Extendee == nil, message != nil && message.allowOneof()) {
+		return 8
+	}
+	if isRepeated(field) {
+		return 24
+	}
+
+	switch *field.Type {
+	case descriptor.FieldDescriptorProto_TYPE_DOUBLE:
+		return 8
+	case descriptor.FieldDescriptorProto_TYPE_FLOAT:
+		return 4
+	case descriptor.FieldDescriptorProto_TYPE_INT64:
+		return 8
+	case descriptor.FieldDescriptorProto_TYPE_UINT64:
+		return 8
+	case descriptor.FieldDescriptorProto_TYPE_INT32:
+		return 4
+	case descriptor.FieldDescriptorProto_TYPE_UINT32:
+		return 4
+	case descriptor.FieldDescriptorProto_TYPE_FIXED64:
+		return 8
+	case descriptor.FieldDescriptorProto_TYPE_FIXED32:
+		return 4
+	case descriptor.FieldDescriptorProto_TYPE_BOOL:
+		return 1
+	case descriptor.FieldDescriptorProto_TYPE_STRING:
+		return 16
+	case descriptor.FieldDescriptorProto_TYPE_GROUP:
+		// The group proto type is deprecated, so let's ignore it.
+		return 0
+	case descriptor.FieldDescriptorProto_TYPE_MESSAGE:
+		// TODO(evnm): Figure out what to return here.
+		return 0
+	case descriptor.FieldDescriptorProto_TYPE_BYTES:
+		return 24
+	case descriptor.FieldDescriptorProto_TYPE_ENUM:
+		// TODO(evnm): Aren't enums ints in Go?
+		return 4
+	case descriptor.FieldDescriptorProto_TYPE_SFIXED32:
+		return 4
+	case descriptor.FieldDescriptorProto_TYPE_SFIXED64:
+		return 8
+	case descriptor.FieldDescriptorProto_TYPE_SINT32:
+		return 4
+	case descriptor.FieldDescriptorProto_TYPE_SINT64:
+		return 8
+	default:
+		g.Fail("unknown type for", field.GetName())
+	}
+	switch {
+	case gogoproto.IsCustomType(field) && gogoproto.IsCastType(field):
+		g.Fail(field.GetName() + " cannot be custom type and cast type")
+	case gogoproto.IsCustomType(field):
+		// TODO(evnm): Not sure what custom types are.
+		return 0
+	case gogoproto.IsCastType(field):
+		// TODO(evnm): Not sure what cast types are.
+		return 0
+	case gogoproto.IsStdTime(field):
+		return 24
+	case gogoproto.IsStdDuration(field):
+		return 24
+	case gogoproto.IsStdDouble(field):
+		return 8
+	case gogoproto.IsStdFloat(field):
+		return 4
+	case gogoproto.IsStdInt64(field):
+		return 8
+	case gogoproto.IsStdUInt64(field):
+		return 8
+	case gogoproto.IsStdInt32(field):
+		return 4
+	case gogoproto.IsStdUInt32(field):
+		return 4
+	case gogoproto.IsStdBool(field):
+		return 1
+	case gogoproto.IsStdString(field):
+		return 16
+	case gogoproto.IsStdBytes(field):
+		return 24
+	}
+
+	return 0
+}
+
 func (g *Generator) generateImported(id *ImportedDescriptor) {
 	df := id.o.File()
 	filename := *df.Name
@@ -2826,7 +2914,13 @@ func (g *Generator) generateMessage(message *Descriptor) {
 
 	mapFieldTypes := make(map[*descriptor.FieldDescriptorProto]string) // keep track of the map fields to be added later
 
-	for i, field := range message.Field {
+	// Order fields by size in order to improve their word size alignment.
+	sizeSortedFields := message.Field
+	sort.Slice(sizeSortedFields, func(i, j int) bool {
+		return g.sizeOfField(message, sizeSortedFields[i]) < g.sizeOfField(message, sizeSortedFields[j])
+	})
+
+	for i, field := range sizeSortedFields {
 		// Allocate the getter and the field at the same time so name
 		// collisions create field/method consistent names.
 		// TODO: This allocation occurs based on the order of the fields
